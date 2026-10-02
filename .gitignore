@@ -1,0 +1,32 @@
+﻿# Python
+.venv/
+.venv311/
+.venv313/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Node
+node_modules/
+**/node_modules/
+frontend/dist/
+signova/dist/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+lerna-debug.log*
+*.local
