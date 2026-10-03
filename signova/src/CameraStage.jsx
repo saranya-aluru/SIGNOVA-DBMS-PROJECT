@@ -5,21 +5,39 @@ function CameraStage({ onRecognized }) {
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
   const intervalRef = useRef(null);
-  const processingRef = useRef(false);
+  const busyRef = useRef(false);
 
   const [cameraOn, setCameraOn] = useState(false);
   const [error, setError] = useState("");
   const [lastSign, setLastSign] = useState("");
-  const [handCount, setHandCount] = useState(0);
+
+  // ============================================================
+  // START CAMERA
+  // ============================================================
 
   const startCamera = async () => {
     try {
       setError("");
 
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setError("Your browser does not support camera access.");
+        return;
+      }
+
+      // Stop any previous stream
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          width: 1280,
-          height: 720,
+          width: {
+            ideal: 1280,
+          },
+          height: {
+            ideal: 720,
+          },
           facingMode: "user",
         },
         audio: false,
@@ -34,14 +52,22 @@ function CameraStage({ onRecognized }) {
       }
 
       setCameraOn(true);
+
+      console.log("Camera started successfully");
     } catch (err) {
       console.error("Camera error:", err);
+
+      setCameraOn(false);
 
       setError(
         "Camera access could not be started. Please allow camera permission."
       );
     }
   };
+
+  // ============================================================
+  // STOP CAMERA
+  // ============================================================
 
   const stopCamera = () => {
     if (intervalRef.current) {
@@ -61,14 +87,17 @@ function CameraStage({ onRecognized }) {
       videoRef.current.srcObject = null;
     }
 
-    processingRef.current = false;
-
     setCameraOn(false);
-    setHandCount(0);
+
+    console.log("Camera stopped");
   };
 
+  // ============================================================
+  // RECOGNIZE FRAME
+  // ============================================================
+
   const recognizeFrame = async () => {
-    if (processingRef.current) {
+    if (busyRef.current) {
       return;
     }
 
@@ -80,47 +109,64 @@ function CameraStage({ onRecognized }) {
       return;
     }
 
-    processingRef.current = true;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+
+    if (
+      video.videoWidth === 0 ||
+      video.videoHeight === 0
+    ) {
+      return;
+    }
+
+    busyRef.current = true;
 
     try {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
+      // --------------------------------------------------------
+      // Set canvas size
+      // --------------------------------------------------------
 
-      const width = video.videoWidth;
-      const height = video.videoHeight;
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
 
-      if (!width || !height) {
-        processingRef.current = false;
+      const ctx = canvas.getContext("2d");
+
+      if (!ctx) {
+        console.error("Could not get canvas context");
         return;
       }
 
-      canvas.width = width;
-      canvas.height = height;
-
-      const ctx = canvas.getContext("2d");
+      // --------------------------------------------------------
+      // Copy camera frame to canvas
+      // --------------------------------------------------------
 
       ctx.drawImage(
         video,
         0,
         0,
-        width,
-        height
+        canvas.width,
+        canvas.height
       );
 
-      /*
-       * Convert the camera frame into a Base64 data URL.
-       *
-       * The Signova backend expects:
-       *
-       * {
-       *   "image": "data:image/jpeg;base64,..."
-       * }
-       */
+      // --------------------------------------------------------
+      // Convert frame to base64 JPEG
+      // --------------------------------------------------------
 
       const imageData = canvas.toDataURL(
         "image/jpeg",
-        0.8
+        0.85
       );
+
+      // --------------------------------------------------------
+      // Send JSON to Flask
+      //
+      // IMPORTANT:
+      // Flask expects:
+      //
+      // request.get_json()
+      // data["image"]
+      //
+      // --------------------------------------------------------
 
       const response = await fetch(
         "http://127.0.0.1:5000/recognize",
@@ -137,47 +183,74 @@ function CameraStage({ onRecognized }) {
         }
       );
 
+      // --------------------------------------------------------
+      // Check HTTP response
+      // --------------------------------------------------------
+
       if (!response.ok) {
-        throw new Error(
-          `Backend returned ${response.status}`
+        console.error(
+          "Recognition server returned HTTP status:",
+          response.status
         );
+
+        return;
       }
+
+      // --------------------------------------------------------
+      // Read JSON response
+      // --------------------------------------------------------
 
       const data = await response.json();
 
-      console.log("Recognition response:", data);
-
-      /*
-       * Backend returns:
-       *
-       * success
-       * sign
-       * word
-       * hand_count
-       * distance
-       * sign_info
-       */
-
-      setHandCount(
-        data.hand_count || 0
+      console.log(
+        "Recognition response:",
+        data
       );
 
-      if (
-        data.success &&
-        data.sign
-      ) {
-        const recognizedSign =
-          data.word ||
-          data.sign;
+      // --------------------------------------------------------
+      // Handle backend errors
+      // --------------------------------------------------------
 
-        setLastSign(
-          recognizedSign
+      if (data.success === false) {
+        console.error(
+          "Recognition backend error:",
+          data.error
         );
 
+        return;
+      }
+
+      // --------------------------------------------------------
+      // Get detected hand count
+      // --------------------------------------------------------
+
+      const handCount = data.hand_count;
+
+      console.log(
+        "Hands detected:",
+        handCount
+      );
+
+      // --------------------------------------------------------
+      // Get recognized sign
+      // --------------------------------------------------------
+
+      const sign =
+        data.sign ||
+        data.label ||
+        data.prediction ||
+        data.word ||
+        "";
+
+      // --------------------------------------------------------
+      // Update UI
+      // --------------------------------------------------------
+
+      if (sign) {
+        setLastSign(sign);
+
         if (onRecognized) {
-          onRecognized(
-            recognizedSign
-          );
+          onRecognized(sign);
         }
       }
     } catch (err) {
@@ -185,15 +258,14 @@ function CameraStage({ onRecognized }) {
         "Recognition request failed:",
         err
       );
-
-      /*
-       * Don't constantly display the error
-       * while the backend is starting.
-       */
     } finally {
-      processingRef.current = false;
+      busyRef.current = false;
     }
   };
+
+  // ============================================================
+  // START CAMERA WHEN COMPONENT LOADS
+  // ============================================================
 
   useEffect(() => {
     startCamera();
@@ -203,33 +275,46 @@ function CameraStage({ onRecognized }) {
     };
   }, []);
 
+  // ============================================================
+  // RECOGNITION LOOP
+  // ============================================================
+
   useEffect(() => {
     if (!cameraOn) {
       return;
     }
 
-    intervalRef.current = setInterval(
-      recognizeFrame,
-      700
+    console.log(
+      "Starting recognition loop..."
     );
+
+    intervalRef.current = setInterval(() => {
+      recognizeFrame();
+    }, 900);
 
     return () => {
       if (intervalRef.current) {
-        clearInterval(
-          intervalRef.current
-        );
-
+        clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
     };
   }, [cameraOn]);
 
+  // ============================================================
+  // UI
+  // ============================================================
+
   return (
     <div className="camera-card">
+
+      {/* ======================================================
+          HEADER
+      ====================================================== */}
 
       <div className="camera-card-header">
 
         <div className="camera-title">
+
           <div className="camera-title-icon">
             Camera
           </div>
@@ -237,6 +322,7 @@ function CameraStage({ onRecognized }) {
           <span>
             Camera Input
           </span>
+
         </div>
 
         <div className="camera-live">
@@ -250,6 +336,11 @@ function CameraStage({ onRecognized }) {
         </div>
 
       </div>
+
+
+      {/* ======================================================
+          CAMERA
+      ====================================================== */}
 
       <div className="camera-window">
 
@@ -268,8 +359,7 @@ function CameraStage({ onRecognized }) {
             </h3>
 
             <p>
-              Start the camera to begin
-              recognition.
+              Start the camera to begin recognition.
             </p>
 
             <button
@@ -281,19 +371,12 @@ function CameraStage({ onRecognized }) {
           </div>
         )}
 
-        {cameraOn && (
-          <div className="camera-hand-status">
-            {handCount > 0
-              ? `${handCount} hand${
-                  handCount > 1
-                    ? "s"
-                    : ""
-                } detected`
-              : "Show your hand to the camera"}
-          </div>
-        )}
-
       </div>
+
+
+      {/* ======================================================
+          HIDDEN CANVAS
+      ====================================================== */}
 
       <canvas
         ref={canvasRef}
@@ -301,6 +384,11 @@ function CameraStage({ onRecognized }) {
           display: "none",
         }}
       />
+
+
+      {/* ======================================================
+          CONTROLS
+      ====================================================== */}
 
       <div className="camera-controls">
 
@@ -312,29 +400,45 @@ function CameraStage({ onRecognized }) {
               : startCamera
           }
         >
+
           {cameraOn
             ? "Stop Camera"
             : "Start Camera"}
+
         </button>
+
 
         <button
           className="snapshot-button"
           onClick={recognizeFrame}
           disabled={!cameraOn}
         >
-          Recognize Now
+          Take Snapshot
         </button>
 
       </div>
 
+
+      {/* ======================================================
+          LAST RECOGNIZED SIGN
+      ====================================================== */}
+
       {lastSign && (
         <div className="camera-recognition-note">
-          Latest recognition:{" "}
+
+          Latest camera result:
+
           <strong>
-            {lastSign}
+            {" "}{lastSign}
           </strong>
+
         </div>
       )}
+
+
+      {/* ======================================================
+          ERROR
+      ====================================================== */}
 
       {error && (
         <div className="camera-error">
