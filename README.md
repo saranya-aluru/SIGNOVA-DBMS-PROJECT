@@ -128,11 +128,6 @@ Signova is an **ongoing project** and I plan to continue developing it with impr
 
 More features, improvements, and refinements will be added as the project evolves.
 
-## Author
 
-**Saranya Aluru**
-B.Tech — Artificial Intelligence and Data Science
-
----
 
 *An assistive technology project exploring real-time sign language recognition using computer vision and machine learning.*
